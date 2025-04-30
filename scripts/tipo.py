@@ -12,7 +12,7 @@ import torch
 import gradio as gr
 
 import modules.scripts as scripts
-from modules import devices, shared, options
+from modules import devices, shared, options, script_callbacks
 from modules.scripts import basedir, OnComponent
 from modules.processing import (
     StableDiffusionProcessingTxt2Img,
@@ -56,11 +56,11 @@ PROCESSING_TIMING = {
     "BEFORE": "Before applying other prompt processings",
     "AFTER": "After applying other prompt processings",
 }
-DEFAULT_FORMAT = """<|special|>, 
-<|characters|>, <|copyrights|>, 
-<|artist|>, 
+DEFAULT_FORMAT = """<|special|>,
+<|characters|>, <|copyrights|>,
+<|artist|>,
 
-<|general|>, 
+<|general|>,
 
 <|quality|>, <|meta|>, <|rating|>"""
 TIMING_INFO_TEMPLATE = (
@@ -706,3 +706,95 @@ shared.options_templates.update(
         },
     )
 )
+
+"""API module for Z-Tipo extension"""
+from typing import Optional, Dict, List
+from fastapi import FastAPI, Depends, HTTPException
+from pydantic import BaseModel
+
+from modules.call_queue import queue_lock  # pylint: disable=import-error
+
+# Request and response models
+class TipoTagRequest(BaseModel):
+    text: str
+    length: str = "short"
+    temperature: float = 0.5
+    top_p: float = 0.9
+    top_k: int = 80
+    ban_tags: str
+
+
+class TipoTagResponse(BaseModel):
+    tags: str
+
+
+class Api:
+    """API class for Z-Tipo extension"""
+    def __init__(self, app: FastAPI, qlock, prefix: Optional[str] = None):
+        self.app = app
+        self.queue_lock = qlock
+        self.prefix = prefix
+
+        self.tipo = TIPOScript()
+
+        # Add API routes
+        self.add_api_route(
+                'generate_tags',
+                self.endpoint_generate_tags,
+                methods=['POST'],
+                response_model=TipoTagResponse
+                )
+
+    def add_api_route(self, path: str, endpoint, **kwargs):
+        """Add an API route with optional prefix"""
+        if self.prefix:
+            path = f'{self.prefix}/{path}'
+
+        # Add authentication if configured in WebUI
+        if hasattr(shared.cmd_opts, 'api_auth') and shared.cmd_opts.api_auth:
+            return self.app.add_api_route(path, endpoint, dependencies=[
+                Depends(self.auth)], **kwargs)
+        return self.app.add_api_route(path, endpoint, **kwargs)
+
+    def auth(self, credentials: dict = Depends(lambda: None)):
+        """Handle authentication if needed"""
+        # This is a placeholder - implement actual auth if needed
+        # based on the wd14-tagger example
+        return True
+
+    def endpoint_generate_tags(self, req: TipoTagRequest):
+        """Generate tags from input text"""
+        try:
+            # Use the queue lock to prevent concurrent execution issues
+            with self.queue_lock:
+                tags = self.tipo.prompt_gen_only(
+                        "",
+                        req.text,
+                        1.0,
+                        -1,
+                        req.length,
+                        req.length,
+                        req.ban_tags,
+                        "custom",
+                        "<|general|>",
+                        req.temperature,
+                        req.top_p,
+                        req.top_k,
+                        "KBlueLeaf/TIPO-500M-ft | TIPO-500M-ft-F16.gguf",
+                        False,
+                        False,
+                        "")
+                # Select the model based on config or request
+                return TipoTagResponse(tags=tags)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(500, f"Error generating tags: {str(e)}")
+
+
+def on_app_started(_, app: FastAPI):
+    """Initialize API when the app starts"""
+    Api(app, queue_lock, '/tipo/v1')
+
+script_callbacks.on_app_started(on_app_started)
