@@ -716,12 +716,15 @@ from modules.call_queue import queue_lock  # pylint: disable=import-error
 
 # Request and response models
 class TipoTagRequest(BaseModel):
-    text: str
+    prompt: str = ""
+    natural: str = ""
     length: str = "short"
     temperature: float = 0.5
     top_p: float = 0.9
     top_k: int = 80
     ban_tags: str
+    seed: int = -1
+    format: str = "<|general|>"
 
 
 class TipoTagResponse(BaseModel):
@@ -768,15 +771,15 @@ class Api:
             # Use the queue lock to prevent concurrent execution issues
             with self.queue_lock:
                 tags = self.tipo.prompt_gen_only(
-                        "",
-                        req.text,
+                        req.prompt,
+                        req.natural,
                         1.0,
-                        -1,
+                        req.seed,
                         req.length,
                         req.length,
                         req.ban_tags,
                         "custom",
-                        "<|general|>",
+                        req.format,
                         req.temperature,
                         req.top_p,
                         req.top_k,
